@@ -45,7 +45,7 @@ Test accuracy fell from **81.4% to 65.3%**.
 
 With only 981 images the augmentation was too strong for the signal available: at ±51° rotation, and especially under horizontal flip, the distinction between hand signs starts to break down. Macro-average F1 dropped to 0.51, well below the weighted 0.60, meaning at least one class had largely collapsed. Augmentation is regularization, and regularization on a tiny dataset can cost more than the overfitting it prevents.
 
-The two fixes were bundled into one change, which is itself the methodological lesson: the skew fix and the augmentation change should have been evaluated separately.
+Three things changed at once between 01 and 02, which is itself the methodological lesson. Beyond the skew fix and the augmentation, notebook 01 passes `class_weight` to `fit()` and notebook 02 does not. With three simultaneous changes, the 16-point drop cannot be attributed to any one of them — the comparison shows *that* v7 was worse, not *why*.
 
 ## Notebooks
 
@@ -69,7 +69,9 @@ models/
 └── cnn_heavier_augmentation.keras    3.1 MB
 ```
 
-The two transfer-learning checkpoints (11 MB and 30 MB) are excluded from the repository. Both notebooks retrain them from the ImageNet weights Keras downloads automatically.
+The two transfer-learning checkpoints (11 MB and 30 MB) are excluded from the repository.
+
+Notebook 03 (MobileNetV2) fetches its ImageNet weights through Keras automatically. **Notebook 04 does not** — it loads the InceptionResNetV2 backbone from a local file at `~/Downloads/InceptionResNetV2_notop.h5`, which is not in this repository. To run it, either download the `notop` weights to that path or change the `weights=` argument to `"imagenet"` so Keras fetches them.
 
 ## Data
 
@@ -84,7 +86,7 @@ processed/
 └── test/    A/  B/  C/     199 images
 ```
 
-Point `PROCESSED_DIR` at that directory and the notebooks run end to end.
+Point `PROCESSED_DIR` at that directory and the notebooks run end to end. Note that `PROCESSED_DIR` is currently **hardcoded to `~/Downloads/processed`** in notebooks 01 and 03 — change it before running.
 
 ## Requirements
 
@@ -100,6 +102,7 @@ TensorFlow/Keras 3, scikit-learn, matplotlib, seaborn. Notebook 04 fine-tunes a 
 
 - **Separate the two changes in v7.** Fix the skew and hold augmentation constant, then sweep augmentation strength independently. As committed, the experiment confounds them.
 - **Sweep augmentation as a parameter** rather than adopting a reference configuration wholesale — rotation range in particular.
+- **Set a global random seed.** Notebooks 02 and 04 seed their augmentation layers (`RANDOM_SEED = 42`), but no notebook calls `keras.utils.set_random_seed()` or `tf.random.set_seed()`, so weight initialisation and shuffling are unseeded. None of these numbers reproduce exactly on a re-run.
 - **Report confidence intervals.** On a 199-image test set, one misclassification moves accuracy by half a point; 97.5% and 99.0% are not meaningfully distinguishable at this sample size.
 - **Test the deployment path explicitly** — a check that feeds a raw image to the saved model and asserts a sane prediction would have caught the skew bug before submission.
 
