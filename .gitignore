@@ -1,0 +1,20 @@
+# Data — ~1 GB of hand photographs, not distributed
+data/processed/
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+
+# Large transfer-learning checkpoints (retrained by the notebooks)
+models/*transfer*
+*.h5
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+venv/
+.venv/
+.env
+
+# OS
+.DS_Store
