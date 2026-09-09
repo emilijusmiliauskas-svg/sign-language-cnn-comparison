@@ -8,6 +8,7 @@ data/**/*.jpeg
 # transfer backbones are not — they exceed GitHub's file limits and the
 # harness refetches ImageNet weights automatically.
 models/mobilenetv2.keras
+models/cnn_*.keras
 models/inceptionresnetv2.keras
 models/*transfer*
 *.h5

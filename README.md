@@ -1,8 +1,8 @@
 # Sign Language A/B/C: What 981 Images Can and Can't Teach a CNN
 
-A comparison of **four convolutional architectures** — two built from scratch, two using transfer learning — on a small custom dataset of hand-sign photographs for the letters **A**, **B**, and **C**.
+A comparison of **five configurations** — three CNNs trained from scratch, two transfer-learning backbones — on a small custom dataset of hand-sign photographs for the letters **A**, **B**, and **C**.
 
-The interesting result isn't the winning accuracy. It's the gap between a model's test score and how it behaved when it was actually deployed.
+Every number below comes from [`experiments/run_experiments.py`](experiments/run_experiments.py): one data pipeline, one evaluation, one global seed, and **each configuration differing from the baseline in exactly one respect**. The raw results are committed as JSON in [`experiments/results/`](experiments/results/).
 
 ---
 
@@ -14,18 +14,29 @@ That is a *tiny* dataset by computer vision standards, and it sets up the centra
 
 ## Results
 
-| # | Model | Params | Test Accuracy |
-|---|-------|-------:|:-------------:|
-| 01 | CNN from scratch (v4) | 250,947 | 81.4% |
-| 02 | CNN from scratch, heavier augmentation (v7) | 250,947 | 65.3% |
-| 03 | Transfer — MobileNetV2 | 2,422,339 | **97.5%** |
-| 04 | Transfer — InceptionResNetV2 | 54,533,859 | **99.0%** |
+| Configuration | Params | Test acc | Macro F1 | Train |
+|---|---:|:---:|:---:|---:|
+| Scratch CNN, light augmentation *(baseline)* | 250,691 | 78.4% | 0.772 | 15 min |
+| Scratch CNN, heavy augmentation | 250,691 | 77.4% | 0.762 | 18 min |
+| Scratch CNN, no class weighting | 250,691 | 83.9% | 0.833 | 18 min |
+| **Transfer — MobileNetV2** | 2,261,827 | **97.0%** | 0.967 | 34 min |
+| **Transfer — InceptionResNetV2** | 54,341,347 | **99.5%** | 0.994 | 37 min |
 
-**Transfer learning wins decisively, and it isn't close.** A frozen ImageNet backbone with a small trained head reached 97.5% with roughly 10× the parameters of the scratch model — and 216× the parameters bought only a further 1.5 points.
+Trained on CPU (Apple M4), seed 42 throughout.
+
+**Transfer learning wins decisively, and it isn't close.** Roughly 9× the parameters bought 19 points. A further 24× bought 2.5 more — real, but sharply diminishing.
+
+InceptionResNetV2 misclassified exactly **one image out of 199**.
+
+## Why Accuracy Alone Overstates Everything Here
+
+The test split is **imbalanced — 43 / 64 / 92** — while training is near-balanced (333 / 340 / 308). Guessing the majority class alone scores **46.2%**.
+
+That is why macro F1 is reported beside every accuracy: it weights all three classes equally and refuses to be flattered by the majority. For the scratch models the two diverge meaningfully; for the transfer models they converge, which is itself evidence the transfer models learned all three classes rather than leaning on the common one.
 
 ## The Finding That Mattered
 
-The from-scratch CNN scored **81.4% on the held-out test set** but only **63% when submitted to the class competition**. Same model, same weights, an 18-point collapse.
+The original from-scratch CNN scored **81.4% on the held-out test set** but only **63% when submitted to the class competition**. Same model, same weights, an 18-point collapse.
 
 The cause was not overfitting. It was **train/serve skew**:
 
@@ -33,78 +44,99 @@ The cause was not overfitting. It was **train/serve skew**:
 - The competition harness fed raw 256×256 images straight to `model.predict()`.
 - None of the preprocessing ran. The model received inputs it had never seen in that form.
 
-The fix was to move every preprocessing step **inside the model** as Keras layers — `Rescaling`, `Resizing`, and the augmentation layers — so that training and inference traverse an identical graph and the model is self-contained at the serialization boundary.
+The fix is to move every preprocessing step **inside the model** as Keras layers — `Rescaling`, `Resizing`, and the augmentation layers — so training and inference traverse an identical graph and the model is self-contained at the serialization boundary. Every configuration in this repository now does that.
 
 This is the kind of bug a test-set score is structurally incapable of catching, because the test set flows through the same pipeline the training data does. Only deployment surfaces it.
 
-## The Second Finding: Augmentation Made It Worse
+## The Claim That Did Not Survive Re-Testing
 
-Notebook 02 fixed the skew bug *and* adopted aggressive augmentation — horizontal flip, ±51° rotation, heavy contrast jitter — copied from the course's reference notebook.
+The original write-up concluded that **aggressive augmentation cost 16 points** — that test accuracy fell from 81.4% to 65.3% when the reference notebook's horizontal flip, ±51° rotation and heavy contrast jitter were adopted.
 
-Test accuracy fell from **81.4% to 65.3%**.
+Under controlled conditions that effect **almost entirely disappears**:
 
-With only 981 images the augmentation was too strong for the signal available: at ±51° rotation, and especially under horizontal flip, the distinction between hand signs starts to break down. Macro-average F1 dropped to 0.51, well below the weighted 0.60, meaning at least one class had largely collapsed. Augmentation is regularization, and regularization on a tiny dataset can cost more than the overfitting it prevents.
+| | Test acc | Macro F1 |
+|---|:---:|:---:|
+| Light augmentation | 78.4% | 0.772 |
+| Heavy augmentation | 77.4% | 0.762 |
 
-Three things changed at once between 01 and 02, which is itself the methodological lesson. Beyond the skew fix and the augmentation, notebook 01 passes `class_weight` to `fit()` and notebook 02 does not. With three simultaneous changes, the 16-point drop cannot be attributed to any one of them — the comparison shows *that* v7 was worse, not *why*.
+**One point.** On a 199-image test set, one point is two images.
+
+The original comparison changed three things at once — it fixed the skew bug, adopted heavy augmentation, *and* dropped `class_weight` — so the 16-point drop could never have been attributed to augmentation in the first place. Re-running with a single variable changed shows that augmentation was not the culprit. What actually caused the original collapse remains unidentified; the most likely candidates are the interaction with the skew fix and ordinary run-to-run variance in an unseeded setup.
+
+Removing class weighting looks like it *helps* — 78.4% to 83.9%. I would not claim that as a real effect. The training set is near-balanced, so the computed weights range only 0.96–1.06, and a 5.5-point swing from weights that close to 1.0 is far more plausibly variance than causation. Establishing it would take repeated runs across several seeds, which is the obvious next experiment and is not done here.
+
+## What Each Model Gets Wrong
+
+Confusion matrices, rows = true class **A / B / C**:
+
+```
+Scratch, no class weighting        MobileNetV2                InceptionResNetV2
+   [[37,  4,  2],                  [[42,  1,  0],             [[43,  0,  0],
+    [ 5, 57,  2],                   [ 1, 63,  0],              [ 0, 64,  0],
+    [ 8, 11, 73]]                   [ 2,  2, 88]]              [ 1,  0, 91]]
+```
+
+The scratch model's errors concentrate in the bottom row: **C is mistaken for A eight times and for B eleven times**, a recall of 0.79 against 0.86 and 0.89 for the other two. C is the open curved hand — the shape closest to a partially-formed A or B, and the one that suffers most under rotation.
+
+## Reproducing
+
+```bash
+export SIGN_DATA_DIR=/path/to/processed
+python experiments/run_experiments.py                      # all five
+python experiments/run_experiments.py --only mobilenetv2   # one
+```
+
+Each run writes `experiments/results/<name>.json` with accuracy, macro and weighted F1, the confusion matrix, per-class precision/recall, full training history, and wall-clock time.
 
 ## Notebooks
 
-```
-notebooks/
-├── 01_cnn_from_scratch.ipynb              81.4% — 4-block CNN, 96×96 input, Adam + L2
-├── 02_cnn_heavier_augmentation.ipynb      65.3% — skew fixed, augmentation overdone
-├── 03_transfer_mobilenetv2.ipynb          97.5% — frozen backbone + fine-tuning, 11.3 min
-└── 04_transfer_inceptionresnetv2.ipynb    99.0% — largest backbone, preprocessing in-model
-```
-
-All notebooks are committed with outputs intact, so the training curves, sample grids, and confusion matrices render directly on GitHub.
-
-**Architecture of the scratch CNN (01):** four Conv→BatchNorm→ReLU→MaxPool→Dropout blocks (32→64→128→128 filters) into global average pooling and a 64-unit dense head, with L2 weight decay at 1e-4 and Adam. Reaching 81.4% from 250k parameters and under a thousand images is a reasonable showing — it just cannot compete with features learned from ImageNet.
-
-## Trained Models
+[`notebooks/`](notebooks/) holds the original exploration — four of sixteen variants, committed with outputs intact so the training curves and sample grids render on GitHub:
 
 ```
-models/
-├── cnn_from_scratch.keras            3.1 MB
-└── cnn_heavier_augmentation.keras    3.1 MB
+01_cnn_from_scratch.ipynb              4-block CNN, 96×96 input, Adam + L2
+02_cnn_heavier_augmentation.ipynb      the skew fix bundled with heavy augmentation
+03_transfer_mobilenetv2.ipynb          frozen backbone then fine-tuning
+04_transfer_inceptionresnetv2.ipynb    largest backbone
 ```
 
-The two transfer-learning checkpoints (11 MB and 30 MB) are excluded from the repository.
+They are kept as the record of how the work actually proceeded, confounds and all. **They are not the source of the numbers above** — the harness is. Their dataset path now reads `SIGN_DATA_DIR`, and notebook 04 fetches ImageNet weights rather than a local `.h5`.
 
-Notebook 03 (MobileNetV2) fetches its ImageNet weights through Keras automatically. **Notebook 04 does not** — it loads the InceptionResNetV2 backbone from a local file at `~/Downloads/InceptionResNetV2_notop.h5`, which is not in this repository. To run it, either download the `notop` weights to that path or change the `weights=` argument to `"imagenet"` so Keras fetches them.
+**Architecture of the scratch CNN:** four Conv→BatchNorm→ReLU→MaxPool→Dropout blocks (32→64→128→128 filters) into global average pooling and a 64-unit dense head, L2 weight decay 1e-4, Adam. Reaching 78–84% from 250k parameters and under a thousand images is a reasonable showing — it just cannot compete with features learned from ImageNet.
 
 ## Data
 
-The dataset is **not included** — roughly 1 GB of photographs of human hands, which is both too large for version control and not mine to publish.
+`data/samples/` contains **24 example images** — eight per class, downscaled — so the repository shows what the model sees.
 
-The notebooks expect the following layout, with one subdirectory per class:
+The full dataset is not included: ~1 GB of hand photographs stored as a `tf.data` snapshot. See [`data/README.md`](data/README.md) for the expected layout and pixel conventions.
+
+## Models
 
 ```
-processed/
-├── train/   A/  B/  C/     981 images
-├── val/     A/  B/  C/     199 images
-└── test/    A/  B/  C/     199 images
+models/
+├── scratch_light_aug.keras          3.0 MB
+├── scratch_heavy_aug.keras          3.0 MB
+└── scratch_no_class_weight.keras    3.0 MB
 ```
 
-Point `PROCESSED_DIR` at that directory and the notebooks run end to end. Note that `PROCESSED_DIR` is currently **hardcoded to `~/Downloads/processed`** in notebooks 01 and 03 — change it before running.
+The transfer checkpoints are excluded: MobileNetV2 is 28 MB and InceptionResNetV2 is **655 MB**, far past GitHub's 100 MB file limit. The harness refetches ImageNet weights automatically, so both rebuild from scratch.
+
+One serialization note: the backbone preprocessing is a `Rescaling` layer rather than a `Lambda` wrapping `preprocess_input`. Both compute the same [-1, 1] transform, but a `Lambda` holding a function reference **cannot be deserialized** by Keras 3 — which is the failure the original notebook 04 worked around by saving to `.h5`.
 
 ## Requirements
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-TensorFlow/Keras 3, scikit-learn, matplotlib, seaborn. Notebook 04 fine-tunes a 54M-parameter backbone and wants a GPU; notebooks 01–03 are comfortable on CPU (MobileNetV2 took 11.3 minutes).
+TensorFlow/Keras 3, scikit-learn, matplotlib, seaborn, pillow. The full suite takes about 2 hours on CPU; a GPU shortens the transfer runs considerably.
 
 ## What I'd Do Next
 
-- **Separate the two changes in v7.** Fix the skew and hold augmentation constant, then sweep augmentation strength independently. As committed, the experiment confounds them.
-- **Sweep augmentation as a parameter** rather than adopting a reference configuration wholesale — rotation range in particular.
-- **Set a global random seed.** Notebooks 02 and 04 seed their augmentation layers (`RANDOM_SEED = 42`), but no notebook calls `keras.utils.set_random_seed()` or `tf.random.set_seed()`, so weight initialisation and shuffling are unseeded. None of these numbers reproduce exactly on a re-run.
-- **Report confidence intervals.** On a 199-image test set, one misclassification moves accuracy by half a point; 97.5% and 99.0% are not meaningfully distinguishable at this sample size.
-- **Test the deployment path explicitly** — a check that feeds a raw image to the saved model and asserts a sane prediction would have caught the skew bug before submission.
+- **Repeat every configuration across 5 seeds** and report mean ± std. Single runs cannot separate a 1-point difference from noise, and the class-weighting result above needs exactly this before it means anything.
+- **Sweep augmentation strength as a continuous parameter** rather than testing two presets, now that a controlled harness makes it a one-line change.
+- **Report confidence intervals.** At n=199 the 95% interval on 97.0% is roughly ±2.4 points, so MobileNetV2 and InceptionResNetV2 are not cleanly separable despite a 2.5-point gap.
+- **Add a deployment smoke test** — feed a raw 256×256 image to the saved model and assert a sane prediction. That single check would have caught the skew bug before submission.
 
 ## License
 
